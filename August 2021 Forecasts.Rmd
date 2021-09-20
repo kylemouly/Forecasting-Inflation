@@ -1,0 +1,143 @@
+---
+title: "August 2021 Inflation Forecasting"
+author: "Kyle Mouly"
+date: "September 13, 2021"
+output:
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+# Setup
+
+For this project I will be forecasting non-seasonally adjusted year over year CPI for all Urban Consumers for the month of August 2021 (FRED series id: CPIAUCNS). The data series will be segmented so as to start after September 1987 to account for the change in the Federal Reserve's attitude towards inflation following Paul Volcker's tenure as chair; a change which is clear when long term inflation trends are examined. The loss of data should not be concerning given that there remains over 30 years of monthly data for use in model training.
+
+## Loading Data
+
+```{r library, message=FALSE}
+library(tidyverse)
+library(fable)
+library(fabletools)
+library(tsibble)
+library(fredr)
+library(feasts)
+library(lubridate)
+```
+
+```{r fredkey, include=FALSE}
+fredr_set_key("1d1d3ef23de16acfda3ba1b4c2d29018")
+```
+
+```{r data}
+CPI <- fredr(series_id = "CPIAUCNS",
+             observation_start = as.Date("1987-09-30"),
+             observation_end = as.Date("2021-07-30"),
+             units = "pc1") %>%
+  mutate(date = yearmonth(date)) %>%
+  select(-c("realtime_start","realtime_end","series_id")) %>%
+  rename(pc1_cpi = value) %>%
+  as_tsibble(index = date)
+
+CPI %>% autoplot(pc1_cpi)+ 
+  labs(title = "U.S. CPI All Urban Consumers",
+       subtitle = "All Items U.S. City Average",
+       y = "YOY Percent Change CPI")
+```
+
+Plot does not indicate any obvious stationary, trending, seasonal behavior; formal unit root tests will be necessary to determine what transformations if any are necessary.
+
+## Stationarity and Seasonality
+
+```{r Stationarity}
+CPI %>%
+  gg_tsdisplay(pc1_cpi,"partial")
+CPI %>%
+  features(pc1_cpi,
+           features = list(
+             unitroot_kpss,
+             unitroot_ndiffs,
+             unitroot_nsdiffs))
+CPI %>%
+  mutate(dpc1_cpi = difference(pc1_cpi)) %>%
+  features(dpc1_cpi, unitroot_kpss)
+```
+
+As per the KPSS test the data is non-stationary and requires a first difference to become stationary.
+
+# Univariate Models
+
+## Model Selection
+
+```{r HCV_CF}
+CPI %>%
+  slice(1:(n()-12)) %>%
+  mutate(dpc1_cpi = difference(pc1_cpi)) %>%
+  na.omit() %>%
+  gg_tsdisplay(dpc1_cpi, plot_type = "partial")
+```
+
+ACF suggests an ARIMA(0,1,1)(0,0,2)[12] candidate model. The PACF suggests an ARIMA(2,1,0)(0,0,2)[12] candidate model.
+
+```{r HCV_models1}
+HCV.fit <- CPI %>%
+  slice(1:(n()-12)) %>%
+  model(ARIMA011 = ARIMA(pc1_cpi ~ pdq(0,1,1) + PDQ(0,0,2)),
+        ARIMA210 = ARIMA(pc1_cpi ~ pdq(2,1,0) + PDQ(0,0,2)),
+        arimaAICc = ARIMA(pc1_cpi, ic = "aicc", stepwise = FALSE, approximation = FALSE),
+        arimaBIC = ARIMA(pc1_cpi, ic = "bic", stepwise = FALSE, approximation = FALSE),
+        etsAICc = ETS(pc1_cpi, ic = "aicc"),
+        etsBIC = ETS(pc1_cpi, ic = "bic"),
+        naive = NAIVE(pc1_cpi)
+  )
+```
+
+```{r HCV_models2}
+HCV.fit %>% pivot_longer(everything(), names_to = "Model", values_to = "Order")
+
+HCV.fit %>% glance() %>% arrange(AICc) %>% select(.model:BIC)
+
+bind_rows(
+  HCV.fit %>% accuracy(),
+  HCV.fit %>% forecast(h = 12) %>% accuracy(CPI)
+) %>%
+  arrange(RMSE)
+
+HCV.fit %>%
+  forecast(h =12) %>%
+  autoplot(CPI)
+```
+
+The best model according to RMSE in the test set is the ARIMA(2,1,0)(0,0,2)[12] while in the training set it is the ARIMA(2,1,0)(2,0,1)[12] w/drift. The prior has a better mix of minimum AICc and BIC so it will be selected as the best model
+
+```{r HCV_resid}
+HCV.fit %>% augment %>% features(.innov, ljung_box)
+HCV.fit %>% select(ARIMA210) %>% gg_tsresiduals()
+```
+
+All ARIMA models appear to have residuals similar to white noise according to the Ljung-Box test.
+
+## Forecasting
+
+```{r HCV_fcast}
+CPI %>%
+  model(arima = ARIMA(pc1_cpi ~ pdq(2,1,0) + PDQ(0,0,2)),
+        ets = ETS(pc1_cpi, ic = "aicc"),
+        naive = NAIVE(pc1_cpi)) %>%
+  forecast(h = 12) %>%
+  autoplot(CPI)
+
+CPI %>%
+  model(arima = ARIMA(pc1_cpi ~ pdq(2,1,0) + PDQ(0,0,2)),
+        ets = ETS(pc1_cpi, ic = "aicc"),
+        naive = NAIVE(pc1_cpi)) %>%
+  forecast(h = 1)
+```
+
+The ARIMA model produces a point forecast of 5.30 for August 2021.
+
+# Official Results
+
+The Bureau of Labor Statistics released the official inflation measures for the month of August 2021 on September 14, 2021 at 8:30am. Rounded to 2 decimal places, official year over year inflation in August was 5.25 compared to my forecasted figure of 5.30.
