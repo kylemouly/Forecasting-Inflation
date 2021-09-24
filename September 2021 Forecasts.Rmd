@@ -1,0 +1,174 @@
+---
+title: "September 2021 Inflation Forecasting"
+author: "Kyle Mouly"
+date: "September 22, 2021"
+output:
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+```{r library, message=FALSE}
+library(tidyverse)
+library(fable)
+library(fabletools)
+library(tsibble)
+library(fredr)
+library(feasts)
+library(lubridate)
+```
+
+```{r fredkey, include=FALSE}
+fredr_set_key("1d1d3ef23de16acfda3ba1b4c2d29018")
+```
+
+# Introduction
+
+Text here
+
+# Univariate Models
+
+## Data
+
+```{r CPIdata}
+CPI <- fredr(series_id = "CPIAUCNS",
+             observation_start = as.Date("1987-09-25"),
+             observation_end = as.Date("2021-08-25"),
+             units = "pc1") %>%
+  mutate(date = yearmonth(date)) %>%
+  select(-c("realtime_start","realtime_end")) %>%
+  rename(cpi = value) %>%
+  as_tsibble(index = date)
+
+CPI %>% autoplot(cpi)+ 
+  labs(title = "U.S. CPI All Urban Consumers",
+       subtitle = "All Items U.S. City Average",
+       y = "YOY Percent Change CPI")
+```
+
+The CPI data is segmented so as to start after September 1987 to account for the change in the Federal Reserve's attitude towards inflation following Paul Volcker's tenure as chair; a change which is clear when long term inflation trends are examined.
+
+```{r LTCPI}
+fredr(series_id = "CPIAUCNS",
+             observation_end = as.Date("2021-08-25"),
+             units = "pc1") %>%
+  mutate(date = yearmonth(date)) %>%
+  select(-c("realtime_start","realtime_end")) %>%
+  rename(cpi = value) %>%
+  as_tsibble(index = date) %>%
+  autoplot(cpi) +
+  labs(title = "U.S. CPI All Urban Consumers",
+       subtitle = "All Items U.S. City Average",
+       y = "YOY Percent Change CPI")
+```
+
+
+The loss of data should not be concerning given that there remains over 30 years of monthly data for use in model training.
+
+### Stationarity
+
+The Plot does not indicate any obvious stationary, trending, seasonal behavior; formal unit root tests will be necessary to determine what transformations if any are necessary.
+
+```{r CPIStationarity}
+CPI %>%
+  gg_tsdisplay(cpi,"partial")
+CPI %>%
+  features(cpi,
+           features = list(
+             unitroot_kpss,
+             unitroot_ndiffs,
+             unitroot_nsdiffs))
+CPI %>%
+  mutate(dcpi = difference(cpi)) %>%
+  features(dcpi, unitroot_kpss)
+```
+
+The ACF plot's large number of significant lags suggests that the series may be non-stationary which is confirmed by the KPSS test. The CPI series is therefore integrated of order 1.
+
+## Model Selection
+
+```{r HCV_CF}
+CPI %>%
+  slice(1:(n()-12)) %>%
+  mutate(dcpi = difference(cpi)) %>%
+  na.omit() %>%
+  gg_tsdisplay(dcpi, plot_type = "partial")
+```
+
+Looking at the ACF and PACF of the first differenced training set suggests the candidate models of ARIMA(0,1,1) or ARIMA(2,1,0) with seasonal components of either (2,0,0) or (0,0,2).
+
+```{r UniModels1}
+CPI_training.fit<- CPI %>%
+  slice(1:(n()-12)) %>%
+  model(ARIMA011002 = ARIMA(cpi ~ pdq(0,1,1) + PDQ(0,0,2)),
+        ARIMA011200 = ARIMA(cpi ~ pdq(0,1,1) + PDQ(2,0,0)),
+        ARIMA210002 = ARIMA(cpi ~ pdq(2,1,0) + PDQ(0,0,2)),
+        ARIMA210200 = ARIMA(cpi ~ pdq(2,1,0) + PDQ(2,0,0)),
+        auto_aicc = ARIMA(cpi, ic = "aicc"),
+        fullauto_aicc = ARIMA(cpi, ic = "aicc", stepwise = FALSE, approximation = FALSE),
+        auto_bic = ARIMA(cpi, ic = "bic"),
+        fullauto_bic = ARIMA(cpi, ic = "bic", stepwise = FALSE, approximation = FALSE),
+        ets_aicc = ETS(cpi, ic = "aicc"),
+        ets_bic = ETS(cpi, ic = "bic"),
+        naive = NAIVE(cpi)
+  )
+```
+
+```{r Unimodels2}
+CPI_training.fit %>% pivot_longer(everything(), names_to = "Model", values_to = "Order")
+
+CPI_training.fit %>% glance() %>% arrange(AICc) %>% select(.model:BIC)
+
+CPI_training.fit %>%
+  forecast(h = 12) %>%
+  accuracy(CPI)%>%
+  arrange(RMSE)
+```
+
+Overall the best performing model according to a mix of information criteria like AICc and BIC and accuracy measures like RMSE and MASE is the model generated through the Hyndman-Khandakar algorithm for automatic ARIMA modelling while minimizing BIC. The model specification turns out to be an ARIMA(1,1,1)(0,0,2).
+
+```{r Unimodels3}
+CPI_training.fit %>%
+  select(auto_bic, fullauto_aicc, ARIMA011200, naive, ets_aicc) %>%
+  forecast(h =12) %>%
+  autoplot(filter(CPI, year(date) >= 2018), level = NULL) +
+  labs(title = "U.S. CPI All Urban Consumers",
+       subtitle = "In-Sample Forecasts",
+       y = "YOY Percent Change CPI",
+       x = "Date")
+```
+
+The plotted in-sample forecasts show that the ARIMA models are much better at predicting the large spike in CPI but are nevertheless far from perfect, being overall outperformed slightly by simple one step naive forecasts as indicated by their MASE of greater than 1.
+
+## Forecasts
+
+```{r Unifcast}
+CPI %>%
+  model(Naive = NAIVE(cpi),
+        Arima = ARIMA(cpi ~ pdq(1,1,1) + PDQ(0,0,2)),
+        Ets = ETS(cpi ~ error(method = "A") + trend(method = "Ad") + season(method = "N"))) %>%
+  pivot_longer(everything(), names_to = "Model", values_to = "Order")
+
+
+CPI %>%
+  model(Naive = NAIVE(cpi),
+        Arima = ARIMA(cpi ~ pdq(1,1,1) + PDQ(0,0,2)),
+        Ets = ETS(cpi ~ error(method = "A") + trend(method = "Ad") + season(method = "N"))) %>%
+  forecast(h = 12) %>%
+  autoplot(filter(CPI, year(date) >= 2018), level = NULL) + 
+  labs(title = "U.S. CPI All Urban Consumers",
+       subtitle = "Forecasts",
+       y = "YOY Percent Change CPI",
+       x = "Date")
+
+CPI %>%
+  model(Naive = NAIVE(cpi),
+        Arima = ARIMA(cpi ~ pdq(1,1,1) + PDQ(0,0,2)),
+        Ets = ETS(cpi ~ error(method = "A") + trend(method = "Ad") + season(method = "N"))) %>%
+  forecast(h = 1)
+```
+
+The one step forecast of the chosen ARIMA model return a predicted YOY change in CPI of 5.30% for September while the simple one step naive forecast returns a predicted YOY change in CPI of 5.25% for September. 
