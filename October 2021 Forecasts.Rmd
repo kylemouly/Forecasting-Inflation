@@ -1,7 +1,7 @@
 ---
-title: "September 2021 Inflation Forecasting"
+title: "October 2021 Inflation Forecasting"
 author: "Kyle Mouly"
-date: "September 22, 2021"
+date: "November 9, 2021"
 output:
   github_document:
     toc: yes
@@ -32,7 +32,7 @@ fredr_set_key("1d1d3ef23de16acfda3ba1b4c2d29018")
 ```{r CPIdata}
 CPI <- fredr(series_id = "CPIAUCNS",
              observation_start = as.Date("1987-09-25"),
-             observation_end = as.Date("2021-08-25"),
+             observation_end = as.Date("2021-09-25"),
              units = "pc1") %>%
   mutate(date = yearmonth(date)) %>%
   select(-c("realtime_start","realtime_end")) %>%
@@ -49,7 +49,7 @@ The CPI data is segmented so as to start after September 1987 to account for the
 
 ```{r LTCPI}
 fredr(series_id = "CPIAUCNS",
-             observation_end = as.Date("2021-08-25"),
+             observation_end = as.Date("2021-09-25"),
              units = "pc1") %>%
   mutate(date = yearmonth(date)) %>%
   select(-c("realtime_start","realtime_end")) %>%
@@ -124,11 +124,11 @@ CPI_training.fit %>%
   arrange(RMSE)
 ```
 
-Overall the best performing model according to a mix of information criteria like AICc and BIC and accuracy measures like RMSE and MASE is the model generated through the Hyndman-Khandakar algorithm for automatic ARIMA modelling while minimizing BIC. The model specification turns out to be an ARIMA(1,1,1)(0,0,2).
+The best model according to AICc is the ARIMA (2,1,0)(2,0,1) with drift which was selected with the Hyndman-Khandakar algorithm without approximation or stepwise selection. The best model according to BIC is the ARIMA (0,1,1)(0,0,2) which was selected manually. According to the accuracy measures of RMSE and MASE the best model seems to be the ARIMA (1,1,1)(0,0,2). Given the ARIMA (2,1,0)(2,0,1) with dirft's poor performance in out of sample accuracy measures the best models seem to be the ARIMA (1,1,1)(0,0,2) selected by the Hyndman-Khandakar algorithm while minimizing BIC and without additional options and ARIMA (0,1,1)(0,0,2) which was selected manually.
 
 ```{r Unimodels3}
 CPI_training.fit %>%
-  select(auto_bic, fullauto_aicc, ARIMA011200, naive, ets_aicc) %>%
+  select(auto_bic, fullauto_aicc, ARIMA011002, naive, ets_aicc) %>%
   forecast(h =12) %>%
   autoplot(filter(CPI, year(date) >= 2018), level = NULL) +
   labs(title = "U.S. CPI All Urban Consumers",
@@ -137,27 +137,32 @@ CPI_training.fit %>%
        x = "Date")
 ```
 
-The plotted in-sample forecasts show that the ARIMA models are much better at predicting the large spike in CPI but are nevertheless far from perfect, being overall outperformed slightly by simple one step naive forecasts as indicated by their MASE of greater than 1.
+The plotted in-sample forecasts show that the ARIMA models are much better at predicting the large spike in CPI but are nevertheless far from perfect, being overall outperformed slightly by simple one step naive forecasts as indicated by their MASE of greater than 1, which is not particularly surprising given the rather extreme conditions under which these models are forecasting.
 
 ```{r resids}
 CPI_training.fit %>% augment %>% features(.innov, ljung_box)
 CPI_training.fit %>% select(auto_bic) %>% gg_tsresiduals()
 ```
 
+According to the Ljung-Box test we fail to reject the null hypothesis of serially uncorrelated errors for all ARIMA models.
 
 ## Forecasts
 
 ```{r Unifcast}
 CPI %>%
   model(Naive = NAIVE(cpi),
-        Arima = ARIMA(cpi ~ pdq(1,1,1) + PDQ(0,0,2)),
-        Ets = ETS(cpi ~ error(method = "A") + trend(method = "Ad") + season(method = "N"))) %>%
+        Arima_111 = ARIMA(cpi ~ pdq(1,1,1) + PDQ(0,0,2)),
+        Arima_011 = ARIMA(cpi ~ pdq(0,1,1) + PDQ(0,0,2)),
+        Ets = ETS(cpi ~ error(method = "A") +
+                    trend(method = "Ad") +
+                    season(method = "N"))) %>%
   pivot_longer(everything(), names_to = "Model", values_to = "Order")
 
 
 CPI %>%
   model(Naive = NAIVE(cpi),
-        Arima = ARIMA(cpi ~ pdq(1,1,1) + PDQ(0,0,2)),
+        Arima_111 = ARIMA(cpi ~ pdq(1,1,1) + PDQ(0,0,2)),
+        Arima_011 = ARIMA(cpi ~ pdq(0,1,1) + PDQ(0,0,2)),
         Ets = ETS(cpi ~ error(method = "A") + trend(method = "Ad") + season(method = "N"))) %>%
   forecast(h = 12) %>%
   autoplot(filter(CPI, year(date) >= 2018), level = NULL) + 
@@ -168,13 +173,10 @@ CPI %>%
 
 CPI %>%
   model(Naive = NAIVE(cpi),
-        Arima = ARIMA(cpi ~ pdq(1,1,1) + PDQ(0,0,2)),
+        Arima_111 = ARIMA(cpi ~ pdq(1,1,1) + PDQ(0,0,2)),
+        Arima_011 = ARIMA(cpi ~ pdq(0,1,1) + PDQ(0,0,2)),
         Ets = ETS(cpi ~ error(method = "A") + trend(method = "Ad") + season(method = "N"))) %>%
   forecast(h = 1)
 ```
 
-The one step forecast of the chosen ARIMA model return a predicted YOY change in CPI of 5.30% for September while the simple one step naive forecast returns a predicted YOY change in CPI of 5.25% for September. 
-
-# Official Results
-
-The Bureau of Labor Statistics released the official inflation measures for the month of September 2021 on October 13, 2021 at 8:30am. Rounded to 2 decimal places, official year over year inflation in August was 5.39% which is considerably higher than both the ARIMA model's forecast of 5.30% and the one step naive model's forecast of 5.25%.
+The one step forecast of the chosen ARIMA model return a predicted YOY change in CPI of 5.42% for October while the simple one step naive forecast returns a predicted YOY change in CPI of 5.39% for October. 

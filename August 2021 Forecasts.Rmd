@@ -3,7 +3,7 @@ title: "August 2021 Inflation Forecasting"
 author: "Kyle Mouly"
 date: "September 13, 2021"
 output:
-  html_document:
+  github_document:
     toc: yes
 ---
 
